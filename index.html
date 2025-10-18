@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rider Safety Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div id="dashboard-container">
+        
+        <header>
+            <h1>Rider Safety System</h1>
+            <nav>
+                <button id="show-dashboard-btn" class="active">Dashboard</button>
+                <button id="show-map-btn">Map View</button>
+            </nav>
+        </header>
+
+        <main>
+            <div id="dashboard-view" class="view active">
+                <div class="live-feed">
+                    <div class="camera-placeholder">[ Live Camera Feed ]</div>
+                </div>
+                <div class="metrics">
+                    <div id="speed-display" class="speed">
+                        <span id="speed-value">0</span>
+                        <span class="unit">km/h</span>
+                    </div>
+                    <div id="status-indicators" class="status">
+                        <span title="GPS Status">🛰️ <b id="gps-status">Searching...</b></span>
+                        <span title="IMU Status">⚖️ <b id="imu-status">Ready</b></span>
+                    </div>
+                </div>
+                <button id="sos-btn" class="sos-button">SOS</button>
+            </div>
+
+            <div id="map-view" class="view">
+                <div id="map"></div>
+            </div>
+        </main>
+    </div>
+
+    <div id="pothole-alert" class="alert-banner">⚠️ POTHOLE AHEAD!</div>
+
+    <div id="crash-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-icon">🚨</div>
+            <h1>CRASH DETECTED!</h1>
+            <p>Notifying Emergency Contacts In</p>
+            <div id="countdown-timer" class="countdown">30</div>
+            <button id="cancel-alert-btn">I'M OK</button>
+        </div>
+    </div>
+
+    <div id="alcohol-modal" class="modal-overlay active">
+        <div class="modal-content">
+            <h2>Pre-Ride Check</h2>
+            <p id="alcohol-status">Analyzing breath sensor...</p>
+            <div id="alcohol-spinner" class="spinner"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

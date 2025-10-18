@@ -1,0 +1,37 @@
+# generate_heatmap.py
+import folium
+from folium.plugins import HeatMap
+import pandas as pd
+import os
+
+CSV_FILE = "bumps.csv"
+OUT_HTML = "heatmap.html"
+
+if not os.path.exists(CSV_FILE):
+    print("No bumps.csv found. Run bump_logger.py first or supply a CSV with timestamp,lat,lon,image.")
+    raise SystemExit(1)
+
+df = pd.read_csv(CSV_FILE)
+if df.empty:
+    print("CSV is empty.")
+    raise SystemExit(1)
+
+# prepare points as [[lat, lon, weight], ...] where weight optional
+points = df[['lat','lon']].dropna().values.tolist()
+
+# center map on average
+center = [df['lat'].mean(), df['lon'].mean()]
+
+m = folium.Map(location=center, zoom_start=15)
+HeatMap(points, radius=25).add_to(m)
+
+# Add clickable markers that open the photo if you want:
+for idx, row in df.iterrows():
+    lat, lon = row['lat'], row['lon']
+    img = row.get('image', '')
+    ts = row.get('timestamp','')
+    popup = folium.Popup(f"{ts}<br><img src='{img}' width='220'>", max_width=260)
+    folium.CircleMarker(location=[lat,lon], radius=4, color='red', fill=True, fill_opacity=0.7, popup=popup).add_to(m)
+
+m.save(OUT_HTML)
+print("Saved", OUT_HTML)

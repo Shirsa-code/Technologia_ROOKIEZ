@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""
+bump_capture_location.py
+- Detect bump via MPU6050 (or simulate)
+- Capture image with USB camera (OpenCV)
+- Get location via GPS (if present) or IP geolocation fallback
+- Append event to a CSV log and regenerate folium heatmap (heatmap.html)
+- Optionally send email with picture + location
+"""
+
+import os
+import time
+import json
+import csv
+import datetime
+import requests
+import smtplib
+from email.message import EmailMessage
+from dotenv import load_dotenv
+
+# try imports that may not be available
+try:
+    import cv2
+except Exception as e:
+    cv2 = None
+try:
+    from mpu6050 import mpu6050
+except Exception:
+    mpu6050 = None
+try:
+    import folium
+    from folium.plugins import HeatMap
+except Exception:
+    folium = None
+
+load_dotenv()
+
+# CONFIG
+IMAGES_DIR = "images"
+LOG_CSV = "bump_log.csv"
+HEATMAP_HTML = "heatmap.html"
+
+# thresholds and device flags
+SIMULATE_BUMP = False           # set True to simulate bump (for demo)
+MPU_ENABLED = (mpu6050 is not None)
+MPU_ADDR = 0x68                 # default I2C address for MPU6050
+BUMP_THRESHOLD = 2.0            # g-change threshold for bump detection (tune)
+
+# email config from .env
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+EMAIL_TO = os.getenv("EMAIL_TO")
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 465))
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+
+# helper: ensure folders
+os.makedirs(IMAGES_DIR, exist_ok=True)
+
+def get_location():
+    """
+    Try GPS (not implemented here) — fallback to IP geolocation (accuracy ~ city-level).
+    If you have a GPS module, replace fallback with serial parsing (pynmea2).
+    """
+    # Placeholder for future GPS integration — if you have GPS attached, implement here.
+    # Fallback: IP geolocation
+    try:
+        r = requests.get("https://ipinfo.io/json", timeout=6)
+        data = r.json()
+        if "loc" in data:
+            lat, lon = map(float, data["loc"].split(","))
+            return {"lat": lat, "lon": lon, "method": "ipinfo", "raw": data}
+    except Exception:
+        pass
+    return {"lat": None, "lon": None, "method": "none", "raw": {}}
+
+def capture_image(filename):
+    """
+    Capture from default camera (USB) using OpenCV.
+    """
+    if cv2 is None:
+        raise RuntimeError("OpenCV (cv2) not available.")
+    cap = cv2.VideoCapture(0, cv2.CAP_ANY)
+    if not cap.isOpened():
+        # Try a short wait then re-open
+        time.sleep(0.5)
+        cap.open(0)
+    if not cap.isOpened():
+        raise RuntimeError("Camera not accessible. Check camera device.")
+    ret, frame = cap.read()
+    cap.release()
+    if not ret or frame is None:
+        raise RuntimeError("Failed to read frame from camera.")
+    # Save as jpg
+    cv2.imwrite(filename, frame)
+    return filename
+
+def log_event(ts, lat, lon, img_path):
+    """
+    Append a line to CSV for heatmap generation.
+    Fields: timestamp,lat,lon,image
+    """
+    new_file = not os.path.exists(LOG_CSV)
+    with open(LOG_CSV, "a", newline="") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(["timestamp", "lat", "lon", "image"])
+        writer.writerow([ts.isoformat(), lat if lat is not None else "", lon if lon is not None else "", img_path])
+
+def generate_heatmap(out_html=HEATMAP_HTML):
+    """
+    Read CSV, create folium heatmap.
+    """
+    if folium is None:
+        print("[WARN] folium not installed; cannot generate heatmap.")
+        return
+    if not os.path.exists(LOG_CSV):
+        print("[INFO] No events logged yet.")
+        return
+    points = []
+    with open(LOG_CSV, newline="") as f:
+        reader = csv.DictReader(f)
+        for r in reader:
+            try:
+                lat = float(r["lat"])
+                lon = float(r["lon"])
+                points.append([lat, lon])
+            except Exception:
+                continue
+    if not points:
+        print("[INFO] No valid geo points to generate heatmap.")
+        return
+    # build map centered on last point
+    center = points[-1]
+    m = folium.Map(location=center, zoom_start=13)
+    HeatMap(points, radius=20).add_to(m)
+    m.save(out_html)
+    print(f"[OK] Heatmap saved to {out_html}")
+
+def send_email_with_attachment(subject, body, attachment_path):
+    """
+    Send an email with attached image (simple SMTP using credentials in .env).
+    Skip if email not configured.
+    """
+    if not EMAIL_USER or not EMAIL_PASS or not EMAIL_TO:
+        print("[INFO] Email not configured; skipping send.")
+        return False
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_FROM or EMAIL_USER
+    msg["To"] = EMAIL_TO
+    msg.set_content(body)
+    # attach
+    with open(attachment_path, "rb") as f:
+        data = f.read()
+    import imghdr
+    img_type = imghdr.what(None, data)
+    if not img_type:
+        img_type = "jpeg"
+    msg.add_attachment(data, maintype="image", subtype=img_type, filename=os.path.basename(attachment_path))
+    try:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as smtp:
+            smtp.login(EMAIL_USER, EMAIL_PASS)
+            smtp.send_message(msg)
+        print("[OK] Email sent.")
+        return True
+    except Exception as e:
+        print("[ERROR] Email send failed:", e)
+        return False
+
+# MPU bump detection (very simple)
+def detect_bump_mpu(sensor):
+    """
+    Read accelerometer and compare to threshold. Returns True if bump detected.
+    """
+    try:
+        accel = sensor.get_accel_data()  # returns dict x,y,z in g
+        # compute magnitude
+        mag = (accel["x"]*2 + accel["y"]2 + accel["z"]*2) ** 0.5
+        # the resting magnitude ~1g; detect sudden change
+        # We return True if magnitude exceeds threshold (rough)
+        # Adjust BUMP_THRESHOLD for sensitivity
+        if abs(mag - 1.0) > BUMP_THRESHOLD:
+            return True, accel, mag
+        return False, accel, mag
+    except Exception as e:
+        # sensor read failure
+        return False, None, None
+
+def main_loop():
+    print("=== bump_capture_location running ===")
+    sensor = None
+    if MPU_ENABLED:
+        try:
+            sensor = mpu6050(MPU_ADDR)
+            print("[OK] MPU initialized.")
+        except Exception as e:
+            print("[WARN] MPU init failed:", e)
+            sensor = None
+
+    print("Press Ctrl-C to stop. SIMULATE_BUMP =", SIMULATE_BUMP)
+    try:
+        while True:
+            bumped = False
+            accel = None
+            mag = None
+
+            if SIMULATE_BUMP:
+                # For demo/testing: press Enter to simulate a bump
+                print("SIMULATION MODE: Press Enter to simulate bump (waiting 10s)...")
+                input()  # wait for Enter
+                bumped = True
+            else:
+                if sensor is not None:
+                    hit, accel, mag = detect_bump_mpu(sensor)
+                    if hit:
+                        bumped = True
+                else:
+                    # fallback: short sleep loop waiting for manual ENTER to simulate
+                    # (so demo won't be stuck if MPU not present)
+                    print("No MPU available. Type 'b' + Enter to simulate bump, or wait 5s.")
+                    try:
+                        # non-blocking small window: check for input for 5 seconds
+                        # simple approach: just sleep and not detect anything
+                        time.sleep(5)
+                    except KeyboardInterrupt:
+                        break
+
+            if bumped:
+                ts = datetime.datetime.utcnow()
+                print(f"[{ts.isoformat()}] BUMP detected! capturing image...")
+
+                img_name = f"bump_{ts.strftime('%Y%m%d_%H%M%S')}.jpg"
+                img_path = os.path.join(IMAGES_DIR, img_name)
+
+                # capture
+                try:
+                    capture_image(img_path)
+                    print("[OK] Image saved:", img_path)
+                except Exception as e:
+                    print("[ERROR] Camera capture failed:", e)
+                    img_path = ""
+
+                # location
+                loc = get_location()
+                lat = loc.get("lat")
+                lon = loc.get("lon")
+                print("[INFO] location:", lat, lon, "method:", loc.get("method"))
+
+                # log and heatmap
+                log_event(ts, lat, lon, img_path)
+                generate_heatmap(HEATMAP_HTML)
+
+                # send email
+                subject = f"Helmet: bump detected at {ts.isoformat()}"
+                body = f"Time (UTC): {ts.isoformat()}\nLocation: {lat},{lon}\nMethod: {loc.get('method')}\nAccel: {accel}\n"
+                if img_path:
+                    send_email_with_attachment(subject, body, img_path)
+                else:
+                    print("[INFO] No image to attach; sending only text.")
+                    send_email_with_attachment(subject, body, img_path)  # will skip if not configured
+
+                # small cooldown to avoid duplicate captures
+                print("[INFO] cooldown 5 seconds")
+                time.sleep(5)
+
+            # loop delay
+            time.sleep(0.2)
+
+    except KeyboardInterrupt:
+        print("Exiting on user request.")
+
+if _name_ == "_main_":
+    main_loop()
